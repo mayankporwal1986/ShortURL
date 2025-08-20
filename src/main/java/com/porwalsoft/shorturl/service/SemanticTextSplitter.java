@@ -27,7 +27,6 @@ import java.util.stream.Collectors;
  * @version 1.0
  */
 @Component
-@Scope("singleton")
 public class SemanticTextSplitter implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(SemanticTextSplitter.class);
@@ -44,40 +43,42 @@ public class SemanticTextSplitter implements AutoCloseable {
     /**
      * Default constructor for Spring autowiring.
      */
-    public SemanticTextSplitter(@Value("${semantic.model.path:models/sentence-transformer}") String modelPath) throws IOException {
-        this(Paths.get(modelPath), DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP);
+    public SemanticTextSplitter() throws IOException {
+        this("models/sentence-transformer", DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP);
     }
 
     /**
-     * Constructor with model path for Spring autowiring.
+     * Constructor with configurable parameters for Spring.
      */
-    public SemanticTextSplitter(@Value("${semantic.model.path}") String modelPath, 
-                               @Value("${semantic.chunk.size:1000}") int chunkSize,
-                               @Value("${semantic.overlap.size:200}") int overlapSize) throws IOException {
-        this(Paths.get(modelPath), chunkSize, overlapSize);
-    }
-
-    /**
-     * Creates semantic text splitter with default configuration.
-     */
-    public SemanticTextSplitter(Path modelPath) throws IOException {
-        this(modelPath, DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP);
-    }
-
-    /**
-     * Creates semantic text splitter with custom chunk settings.
-     */
-    public SemanticTextSplitter(Path modelPath, int chunkSize, int overlapSize) throws IOException {
+    public SemanticTextSplitter(
+            @Value("${semantic.model.path:models/sentence-transformer}") String modelPath,
+            @Value("${semantic.chunk.size:1000}") int chunkSize,
+            @Value("${semantic.overlap.size:200}") int overlapSize) throws IOException {
+        
         this.chunkSize = chunkSize;
         this.overlapSize = overlapSize;
         
         try {
-            this.model = SavedModelBundle.load(modelPath.toString(), "serve");
+            this.model = SavedModelBundle.load(modelPath, "serve");
             log.info("Loaded TensorFlow model: {}", modelPath);
         } catch (Exception e) {
             log.error("Failed to load model: {}", modelPath, e);
             throw new IOException("Model loading failed", e);
         }
+    }
+
+    /**
+     * Creates semantic text splitter with default configuration.
+     */
+    public static SemanticTextSplitter create(Path modelPath) throws IOException {
+        return new SemanticTextSplitter(modelPath.toString(), DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP);
+    }
+
+    /**
+     * Creates semantic text splitter with custom chunk settings.
+     */
+    public static SemanticTextSplitter create(Path modelPath, int chunkSize, int overlapSize) throws IOException {
+        return new SemanticTextSplitter(modelPath.toString(), chunkSize, overlapSize);
     }
 
     /**
@@ -214,9 +215,9 @@ public class SemanticTextSplitter implements AutoCloseable {
     private float[] computeEmbedding(String sentence) {
         try (Session session = new Session(model.graph())) {
             
-            // Create input tensor with proper byte array handling
-            byte[] sentenceBytes = sentence.getBytes();
-            try (TString input = TString.tensorOf(Shape.of(1), sentenceBytes)) {
+            // Create string tensor using correct API
+            String[] inputArray = {sentence};
+            try (TString input = TString.tensorOf(inputArray)) {
             
                 Result outputs = session.runner()
                         .feed("serving_default_input", input)
