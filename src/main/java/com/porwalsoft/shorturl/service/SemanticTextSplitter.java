@@ -3,13 +3,17 @@ package com.example.semantic;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Scope;
 import org.tensorflow.*;
 import org.tensorflow.ndarray.Shape;
+import org.tensorflow.ndarray.buffer.FloatDataBuffer;
 import org.tensorflow.types.TFloat32;
 import org.tensorflow.types.TString;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -23,6 +27,7 @@ import java.util.stream.Collectors;
  * @version 1.0
  */
 @Component
+@Scope("singleton")
 public class SemanticTextSplitter implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(SemanticTextSplitter.class);
@@ -35,6 +40,22 @@ public class SemanticTextSplitter implements AutoCloseable {
     private final Map<String, float[]> embeddingCache = new ConcurrentHashMap<>();
     private final int chunkSize;
     private final int overlapSize;
+
+    /**
+     * Default constructor for Spring autowiring.
+     */
+    public SemanticTextSplitter(@Value("${semantic.model.path:models/sentence-transformer}") String modelPath) throws IOException {
+        this(Paths.get(modelPath), DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP);
+    }
+
+    /**
+     * Constructor with model path for Spring autowiring.
+     */
+    public SemanticTextSplitter(@Value("${semantic.model.path}") String modelPath, 
+                               @Value("${semantic.chunk.size:1000}") int chunkSize,
+                               @Value("${semantic.overlap.size:200}") int overlapSize) throws IOException {
+        this(Paths.get(modelPath), chunkSize, overlapSize);
+    }
 
     /**
      * Creates semantic text splitter with default configuration.
@@ -191,19 +212,23 @@ public class SemanticTextSplitter implements AutoCloseable {
      * Compute single sentence embedding using TensorFlow.
      */
     private float[] computeEmbedding(String sentence) {
-        try (Session session = new Session(model.graph());
-             TString input = TString.tensorOfBytes(Shape.of(1), 
-                     data -> data.setObject(sentence.getBytes(), 0))) {
+        try (Session session = new Session(model.graph())) {
             
-            List<Tensor> outputs = session.runner()
-                    .feed("serving_default_input", input)
-                    .fetch("StatefulPartitionedCall")
-                    .run();
+            // Create input tensor with proper byte array handling
+            byte[] sentenceBytes = sentence.getBytes();
+            try (TString input = TString.tensorOf(Shape.of(1), sentenceBytes)) {
             
-            try (TFloat32 output = (TFloat32) outputs.get(0)) {
-                float[] embedding = new float[(int) output.size()];
-                output.asRawTensor().data().asFloats().read(embedding);
-                return normalizeVector(embedding);
+                Result outputs = session.runner()
+                        .feed("serving_default_input", input)
+                        .fetch("StatefulPartitionedCall")
+                        .run();
+                
+                try (TFloat32 output = (TFloat32) outputs.get(0)) {
+                    FloatDataBuffer buffer = output.asRawTensor().data().asFloats();
+                    float[] embedding = new float[(int) buffer.size()];
+                    buffer.read(embedding);
+                    return normalizeVector(embedding);
+                }
             }
         } catch (Exception e) {
             log.warn("Embedding failed for sentence: {}", sentence.substring(0, Math.min(50, sentence.length())));
@@ -215,10 +240,13 @@ public class SemanticTextSplitter implements AutoCloseable {
      * Normalize embedding vector.
      */
     private float[] normalizeVector(float[] vector) {
-        double norm = Math.sqrt(Arrays.stream(vector)
-                .asDoubleStream()
-                .map(x -> x * x)
-                .sum());
+        double norm = 0.0;
+        
+        // Calculate norm manually to avoid Arrays.stream issues
+        for (float value : vector) {
+            norm += value * value;
+        }
+        norm = Math.sqrt(norm);
         
         if (norm > 0) {
             for (int i = 0; i < vector.length; i++) {
